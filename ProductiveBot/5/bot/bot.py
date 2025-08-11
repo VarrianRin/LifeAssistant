@@ -1,73 +1,101 @@
-# bot/webhook_runner.py
-import logging, os
-from aiohttp import web
+# bot.py
+"""
+Запуск Telegram-бота через long-polling (aiogram v3).
+
+• Без webhook и aiohttp-сервера — идеально для локальной разработки
+  или прода за NAT, где настроить TLS/Webhook затруднительно.
+• Работает на macOS/Linux/Windows одинаково.
+• Логика бота («роутеры») остаётся прежней, меняется только точка входа.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import signal
+from contextlib import suppress
+
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.webhook.aiohttp_server import (
-    SimpleRequestHandler, setup_application
-)
-from dotenv import load_dotenv
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from dotenv import load_dotenv
+
+# ─── ваши модули с роутерами ───────────────────────────────────────────
 from bot.handlers import start, tasks, notion, music, pomodoro, today
 
-# ───────────────────── env & logging ─────────────────────
+# ──────────────────── env & logging ────────────────────────────────────
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s: %(message)s",
+)
 log = logging.getLogger("bot")
 
-BOT_TOKEN     = os.getenv("BOT_TOKEN")
-BASE_WEBHOOK  = "https://b46d7eb57a75.ngrok-free.app" #os.getenv("WEBHOOK_URL")          # e.g. https://xyz.ngrok-free.app
-print("BASE_WEBHOOK: ", BASE_WEBHOOK)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    log.critical("Переменная окружения BOT_TOKEN не установлена.")
+    raise SystemExit(1)
 
-WEBHOOK_PATH  = "/bot/webhook"
-WEBHOOK_FULL  = BASE_WEBHOOK.rstrip("/") + WEBHOOK_PATH  # full URL
-
-if not BOT_TOKEN or not BASE_WEBHOOK:
-    raise RuntimeError("BOT_TOKEN and WEBHOOK_URL must be set")
-
-# ───────────────────── aiogram core ──────────────────────
+# ──────────────────── core & routers ───────────────────────────────────
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-dp = Dispatcher()
 
-# ────────── register your routers here ──────────
-def register_routers(dp: Dispatcher) -> None:
-    """Register all routers."""
-    dp.include_router(start.router)  # /start
-    dp.include_router(notion.router)  # /connect_notion, /connect_notion_table, /connect_notion_category_table
-    dp.include_router(music.router)  # /add_music
-    dp.include_router(pomodoro.router)  # /pomodoro
-    dp.include_router(today.router)  # /today
-    dp.include_router(tasks.router)  # text  and voice messages
+dp = Dispatcher(storage=MemoryStorage())
+
+
+def register_routers(dispatcher: Dispatcher) -> None:
+    """Подключаем все рутеры бота."""
+    dispatcher.include_router(start.router)      # /start
+    dispatcher.include_router(notion.router)     # /connect_notion …
+    dispatcher.include_router(music.router)      # /add_music
+    dispatcher.include_router(pomodoro.router)   # /pomodoro
+    dispatcher.include_router(today.router)      # /today
+    dispatcher.include_router(tasks.router)      # текст/voice
+
 
 register_routers(dp)
 
-# ─────────────────── aiohttp app ─────────────────────────
-async def on_startup(app: web.Application):
-    log.info("→ Setting webhook %s", WEBHOOK_FULL)
-    await bot.set_webhook(WEBHOOK_FULL)
+# ──────────────────── graceful shutdown ────────────────────────────────
+_STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
-async def on_shutdown(app: web.Application):
-    log.info("← Deleting webhook")
-    await bot.delete_webhook()
-    await dp.storage.close()
-    await bot.session.close()
 
-app = web.Application()
-app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
+def _setup_stop_signals(loop: asyncio.AbstractEventLoop) -> None:
+    for sig in _STOP_SIGNALS:
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(_stop(loop)))
 
-SimpleRequestHandler(
-    dispatcher=dp,
-    bot=bot
-).register(app, path=WEBHOOK_PATH)
 
-setup_application(app, dp, bot=bot)     # graceful task cancellation
+async def _stop(loop: asyncio.AbstractEventLoop) -> None:
+    """Корректно завершаем работу бота (Ctrl-C / kill)."""
+    log.info("← Shutting down...")
+    tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    with suppress(asyncio.CancelledError):
+        await asyncio.gather(*tasks)
+    loop.stop()
 
-# ─────────────────────── runner ──────────────────────────
+
+# ──────────────────── точка входа ───────────────────────────────────────
+async def main() -> None:
+    log.info("→ Starting bot in polling mode")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
+        log.info("→ Bot stopped")
+
+
 if __name__ == "__main__":
-    log.info("Bot webhook listening on 0.0.0.0:8081")
-    web.run_app(app, host="0.0.0.0", port=8081)
+    event_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(event_loop)
+    _setup_stop_signals(event_loop)
+
+    try:
+        event_loop.run_until_complete(main())
+    finally:
+        event_loop.close()

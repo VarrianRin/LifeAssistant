@@ -348,7 +348,7 @@ def create_notion_thought(
         props = {
             "Name":    {"title": [{"text": {"content": idea["name"]}}]},
             "Date":    {"date": {"start": now_iso}},
-            "Status":  {"select": {"name": "помыслитьChatGPT"}},
+            "Status":  {"status": {"name": "помыслитьChatGPT"}},
         }
 
         # связь со сферой

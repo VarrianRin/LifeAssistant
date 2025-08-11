@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Secrets
+.env
+bot/.env
+
+# OS
+.DS_Store
+
+# Data (не коммитим персональные CSV)
+data/*.csv
+!data/*.example.csv
