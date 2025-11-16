@@ -24,6 +24,8 @@ from dotenv import load_dotenv
 
 # ─── ваши модули с роутерами ───────────────────────────────────────────
 from bot.handlers import start, tasks, notion, music, pomodoro, today
+from bot.handlers import vocab  # NEW
+
 
 # ──────────────────── env & logging ────────────────────────────────────
 load_dotenv()
@@ -56,6 +58,9 @@ def register_routers(dispatcher: Dispatcher) -> None:
     dispatcher.include_router(pomodoro.router)   # /pomodoro
     dispatcher.include_router(today.router)      # /today
     dispatcher.include_router(tasks.router)      # текст/voice
+    
+    dispatcher.include_router(vocab.router)
+
 
 
 register_routers(dp)
